@@ -4,11 +4,12 @@ from dotenv import load_dotenv
 import os
 import openai
 import json
+import re
 
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 openai.api_key = os.getenv("API_KEY")
 
@@ -16,43 +17,45 @@ system_instruction = {
     "role": "system",
     "content": """You are a Snowflake SQL expert assistant and a DOMO Magic ETL transformation translator. Your responsibilities are:
 
-1. Accurately analyze a JSON object derived from DOMO Magic ETL that describes a data transformation pipeline.
+    1. Accurately analyze a JSON object derived from DOMO Magic ETL that describes a data transformation pipeline.
 
-2. Convert the JSON pipeline into a valid and Snowflake-compatible SQL query that replicates the same logic.
+    2. Convert the JSON pipeline into a valid and Snowflake-compatible SQL query that replicates the same logic.
 
-3. Generate a complete Snowflake SQL script that:
-   a. Begins with `USE DATABASE`, `USE SCHEMA`, and `USE WAREHOUSE` setup statements.
-   b. Includes `CREATE TABLE IF NOT EXISTS` statements for all intermediate and final tables referenced.
-   c. Wraps all transformation logic inside a `CREATE OR REPLACE PROCEDURE` block using:
-      - `LANGUAGE SQL`
-      - A single `BEGIN...END` block
-   d. Performs all logic using only valid Snowflake SQL syntax.
+    3. Generate a complete Snowflake SQL script that:
+    a. Begins with `USE DATABASE`, `USE SCHEMA`, and `USE WAREHOUSE` setup statements.
+    b. Includes `CREATE TABLE IF NOT EXISTS` statements for all intermediate and final tables referenced.
+    c. Wraps all transformation logic inside a `CREATE OR REPLACE PROCEDURE` block using:
+        - `LANGUAGE SQL`
+        - A single `BEGIN...END` block
+    d. Performs all logic using only valid Snowflake SQL syntax.
 
-4. When defining table columns, infer the correct Snowflake data types only.
+    4. When defining table columns, infer the correct Snowflake data types only.
 
-5. Do **not** use any invalid types like `LONG`, `INT64`, or other non-Snowflake types.
+    5. Do **not** use any invalid types like `LONG`, `INT64`, or other non-Snowflake types.
 
-6. Do **not** hallucinate missing columns or logic. Only use data and fields present in the input JSON.
+    6. Do **not** hallucinate missing columns or logic. Only use data and fields present in the input JSON.
 
-7. Skip GUI-related or ambiguous steps that don't affect SQL logic (e.g., visualization settings or styling).
+    7. Skip GUI-related or ambiguous steps that don't affect SQL logic (e.g., visualization settings or styling).
 
-8. Do **not** use any placeholders like `<TABLE_NAME>` or `<COLUMN_NAME>`. Always use actual names from the JSON input.
+    8. Do **not** use any placeholders like `<TABLE_NAME>` or `<COLUMN_NAME>`. Always use actual names from the JSON input.
 
-9. Always respond strictly in the following JSON format (and nothing else):
-   {
-     "sql": "<entire Snowflake SQL script>"
-   }
+    9. Always respond strictly in the following JSON format (and nothing else):
+    {
+        "sql": "<entire Snowflake SQL script>"
+    }
 
-10. Do not include any extra commentary, explanation, or additional fields outside the `sql` key in the output.
+    10. Do not include any extra commentary, explanation, or additional fields outside the `sql` key in the output.
 
-11. **Don't use any of "\n" or "\\n" gave me raw multiline Output **
-IMPORTANT: Always respond in pure JSON with this format and don't add any additional object or any other text:
-{
-  "sql": "..."
-}
+    11. Ensure the script strictly follows valid Snowflake SQL syntax, including correct data types, proper use of semicolons, valid identifier names (e.g., no spaces unless quoted), and balanced parentheses.
 
-12. nsure the script strictly follows valid Snowflake SQL syntax, including correct data types, proper use of semicolons, valid identifier names (e.g., no spaces unless quoted), and balanced parentheses.
-"""
+    12. All identifiers (table names, column names, object keys) must be written without spaces and use underscores. However, if the input JSON contains an identifier with spaces, preserve it exactly and wrap it in double quotes (e.g., "User Answer 6"). Do not quote identifiers that do not contain spaces. Never convert names to underscores unless they are already written that way in the input.
+
+    13. **Don't use any of "\n" or "\\n" gave me raw multiline Output **
+    IMPORTANT: Always respond in pure JSON with this format and don't add any additional object or any other text:
+    {
+    "sql": "..."
+    }
+    """
 }
 
 
@@ -78,19 +81,22 @@ def generate_sql():
                     "details": str(e)
                 }), 400
 
+        print("input_json", input_json)
+        print("type input_json", type(input_json))
         response = openai.chat.completions.create(
             model="gpt-4-turbo",
             messages=[
                 system_instruction,
                 {
                     "role": "user",
-                    "content": json.dumps(input_json)
+                    "content": json.dumps(input_json, ensure_ascii=False)
                 }
             ]
         )
 
         response_content = response.choices[0].message.content.strip()
-
+        response_content = re.sub(r"^```(?:json)?|```$", "", response_content.strip(), flags=re.MULTILINE).strip()
+        
         if not response_content:
             return jsonify({"error": "Empty response from OpenAI"}), 500
 
